@@ -18,6 +18,9 @@
   },
   "bundle": {
     "active": true,
+    "macOS": {
+      "signingIdentity": "-"
+    },
     "targets": [
       "app",
       "dmg"

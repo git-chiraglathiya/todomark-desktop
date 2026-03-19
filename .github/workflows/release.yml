@@ -17,6 +17,8 @@ jobs:
     name: Build macOS bundle and publish release
     runs-on: macos-latest
     if: startsWith(github.ref, 'refs/tags/v')
+    env:
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || '-' }}
 
     steps:
       - name: Checkout repository
@@ -36,6 +38,18 @@ jobs:
 
       - name: Build TodoMark bundle
         run: npm run tauri:build
+
+      - name: Verify app signature
+        run: |
+          set -euo pipefail
+          APP_PATH="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
+          if [ -z "${APP_PATH}" ]; then
+            echo "No .app bundle found in macOS output directory."
+            exit 1
+          fi
+          echo "Verifying signature for: ${APP_PATH}"
+          codesign --verify --deep --strict --verbose=2 "${APP_PATH}"
+          spctl -a -vv "${APP_PATH}" || true
 
       - name: Upload build artifacts to GitHub release
         uses: softprops/action-gh-release@v2
