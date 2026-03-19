@@ -36,6 +36,22 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Derive release version from tag
+        run: |
+          set -euo pipefail
+          RELEASE_VERSION="${GITHUB_REF_NAME#v}"
+          if [ -z "${RELEASE_VERSION}" ] || [ "${RELEASE_VERSION}" = "${GITHUB_REF_NAME}" ]; then
+            echo "Unable to derive release version from tag '${GITHUB_REF_NAME}'."
+            exit 1
+          fi
+          echo "RELEASE_VERSION=${RELEASE_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Set Tauri app version for this build
+        run: |
+          node -e 'const fs=require("fs");const p="src-tauri/tauri.conf.json";const c=JSON.parse(fs.readFileSync(p,"utf8"));c.version=process.env.RELEASE_VERSION;fs.writeFileSync(p,JSON.stringify(c,null,2)+"\n");'
+          echo "Building TodoMark version ${RELEASE_VERSION}"
+          grep '"version"' src-tauri/tauri.conf.json | head -n 1
+
       - name: Build TodoMark bundle
         run: npm run tauri:build
 

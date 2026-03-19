@@ -6,7 +6,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::UNIX_EPOCH;
 use tauri::menu::{Menu, MenuItem, Submenu};
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
+use tauri::{
+    AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
+};
 use tauri_plugin_dialog::DialogExt;
 
 const OPEN_NEW_MENU_ID: &str = "open-new";
@@ -178,6 +180,31 @@ fn try_path_from_arg(raw: &str, cwd: Option<&Path>) -> Option<PathBuf> {
     }
 }
 
+fn is_markdown_file(path: &Path) -> bool {
+    path.is_file()
+        && path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("md"))
+            .unwrap_or(false)
+}
+
+fn push_unique_markdown_path(candidate: &Path, seen: &mut HashSet<String>, paths: &mut Vec<PathBuf>) {
+    let canonical = match fs::canonicalize(candidate) {
+        Ok(path) => path,
+        Err(_) => return,
+    };
+
+    if !is_markdown_file(&canonical) {
+        return;
+    }
+
+    let key = canonical_key(&canonical);
+    if seen.insert(key) {
+        paths.push(canonical);
+    }
+}
+
 fn extract_markdown_paths(args: &[String], cwd: Option<&Path>) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     let mut seen = HashSet::new();
@@ -187,24 +214,7 @@ fn extract_markdown_paths(args: &[String], cwd: Option<&Path>) -> Vec<PathBuf> {
             continue;
         };
 
-        let canonical = match fs::canonicalize(&candidate) {
-            Ok(path) => path,
-            Err(_) => continue,
-        };
-
-        let is_markdown = canonical
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| ext.eq_ignore_ascii_case("md"))
-            .unwrap_or(false);
-        if !is_markdown {
-            continue;
-        }
-
-        let key = canonical_key(&canonical);
-        if seen.insert(key) {
-            paths.push(canonical);
-        }
+        push_unique_markdown_path(&candidate, &mut seen, &mut paths);
     }
 
     paths
@@ -356,7 +366,6 @@ fn setup_initial_windows(app: &AppHandle) {
     let initial_paths = extract_markdown_paths(&args, cwd.as_deref());
 
     if initial_paths.is_empty() {
-        open_markdown_from_dialog(app);
         return;
     }
 
@@ -374,9 +383,7 @@ fn handle_single_instance_event(app: &AppHandle, args: Vec<String>, cwd: String)
 
     let paths = extract_markdown_paths(&args, cwd_path.as_deref());
     if paths.is_empty() {
-        if !focus_any_window(app) {
-            open_markdown_from_dialog(app);
-        }
+        let _ = focus_any_window(app);
         return;
     }
 
@@ -386,6 +393,7 @@ fn handle_single_instance_event(app: &AppHandle, args: Vec<String>, cwd: String)
 }
 
 fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let menu = Menu::default(app)?;
     let open_new_item = MenuItem::with_id(
         app,
         OPEN_NEW_MENU_ID,
@@ -393,9 +401,27 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         true,
         Some("CmdOrCtrl+O"),
     )?;
-    let file_submenu = Submenu::with_id_and_items(app, "file", "File", true, &[&open_new_item])?;
+    let mut has_file_submenu = false;
 
-    Menu::with_items(app, &[&file_submenu])
+    for item in menu.items()? {
+        let Some(submenu) = item.as_submenu().cloned() else {
+            continue;
+        };
+
+        if submenu.text().map(|text| text == "File").unwrap_or(false) {
+            submenu.prepend(&open_new_item)?;
+            has_file_submenu = true;
+            break;
+        }
+    }
+
+    if !has_file_submenu {
+        let file_submenu =
+            Submenu::with_id_and_items(app, "file", "File", true, &[&open_new_item])?;
+        menu.prepend(&file_submenu)?;
+    }
+
+    Ok(menu)
 }
 
 fn open_markdown_from_dialog(app: &AppHandle) {
@@ -420,7 +446,7 @@ fn open_markdown_from_dialog(app: &AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .manage(WindowRegistry::default())
         .menu(build_app_menu)
         .on_menu_event(|app, event| {
@@ -442,6 +468,25 @@ pub fn run() {
             write_markdown,
             stat_markdown
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| {
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        if let RunEvent::Opened { urls } = event {
+            let mut paths = Vec::new();
+            let mut seen = HashSet::new();
+
+            for url in urls {
+                let Ok(path) = url.to_file_path() else {
+                    continue;
+                };
+                push_unique_markdown_path(&path, &mut seen, &mut paths);
+            }
+
+            for path in paths {
+                let _ = open_or_focus_markdown_window(app_handle, &path);
+            }
+        }
+    });
 }
