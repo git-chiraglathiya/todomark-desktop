@@ -16,6 +16,7 @@ jobs:
   macos-release:
     name: Build macOS bundle and publish release
     runs-on: macos-latest
+    if: startsWith(github.ref, 'refs/tags/v')
 
     steps:
       - name: Checkout repository
@@ -39,6 +40,8 @@ jobs:
       - name: Upload build artifacts to GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
+          name: TodoMark ${{ github.ref_name }}
           generate_release_notes: true
           files: |
             src-tauri/target/release/bundle/**/*.dmg
